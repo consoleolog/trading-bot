@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.2
+    hooks:
+      - id: ruff          # lint + 자동 수정
+        args: [--fix]
+      - id: ruff-format   # 포맷
+
+  - repo: local
+    hooks:
+      - id: bandit
+        name: bandit
+        entry: uv run bandit
+        language: system
+        args: [-c, bandit.yaml, -r]
+        types: [python]
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        args: [--no-cov]  # pre-commit 시점에는 커버리지 제외 (속도)
+        pass_filenames: false
+        always_run: true

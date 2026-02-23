@@ -1,0 +1,51 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            PR 리뷰를 시작하기 전에 아래 프로젝트 문서들을 먼저 읽어줘:
+
+            - `docs/guides/CODE_REVIEW.md` : 코드 리뷰 체크리스트 및 판정 기준
+            - `docs/guides/CODING_CONVENTION.md` : 코딩 컨벤션
+            - `docs/guides/CODING_GUIDE.md` : 코딩 가이드
+            - `docs/guides/COMMIT_MESSAGE.md` : 커밋 메시지 규칙
+
+            `docs/guides/CODE_REVIEW.md` 의 체크리스트를 기준으로 이 PR을 리뷰하고 한국어로 피드백을 작성해줘:
+
+            1. **커밋 단위**: 커밋이 최소 단위인지, 하나의 커밋을 더 분리할 수 있는지 확인
+            2. **테스트 코드**: 새로운 코드에 대응하는 테스트가 작성되었는지 확인
+            3. **코드 컨벤션**: CODING_CONVENTION / CODING_GUIDE 기준 네이밍, 타입 힌트, 스타일 준수 여부
+            4. **커밋 메시지**: 커밋 메시지가 실제 변경 내용을 빠짐없이 담고 있는지 확인
+            5. **전체 평가**: Approve / Request Changes 중 하나를 권고
+
+            피드백은 `[Must]` / `[Should]` / `[Nit]` 로 우선순위를 구분해줘.
+            코드의 특정 라인에 대한 피드백은 인라인 코멘트로 남겨줘.
+            전체 요약 피드백은 `gh pr comment` 로 PR에 남겨줘.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read"
