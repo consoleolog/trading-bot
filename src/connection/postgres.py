@@ -111,3 +111,21 @@ class PostgresPool:
         """
         async with self.pool.acquire() as conn, conn.transaction():
             yield conn
+
+    async def fetch_all(self, query: str, *args) -> list:
+        """쿼리를 실행하고 결과 행 전체를 반환합니다.
+
+        풀이 연결되지 않은 경우 빈 리스트를 반환합니다.
+
+        Args:
+            query: 실행할 SQL 쿼리 문자열.
+            *args: 쿼리 바인딩 파라미터.
+
+        Returns:
+            list: 결과 행 목록. 연결되지 않은 경우 빈 리스트.
+        """
+        if not self.pool or not self.is_connected:
+            return []
+
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(query, *args)
