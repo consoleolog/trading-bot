@@ -1,5 +1,7 @@
 import os
 import urllib.parse
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import asyncpg
 import structlog
@@ -84,3 +86,16 @@ class PostgresPool:
             self.pool = None
             self.is_connected = False
             logger.info("🔒 데이터베이스 연결 해제")
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncGenerator[asyncpg.Connection, None]:
+        """풀에서 커넥션 하나를 획득합니다.
+
+        명시적 트랜잭션이 필요 없는 단순 쿼리에 사용합니다.
+        컨텍스트 블록 종료 시 커넥션은 자동으로 풀에 반환됩니다.
+
+        Yields:
+            asyncpg.Connection: 활성 데이터베이스 커넥션.
+        """
+        async with self.pool.acquire() as conn:
+            yield conn
