@@ -31,6 +31,7 @@ class FakeConnection:
     def __init__(self) -> None:
         self.last_tx: FakeTransaction | None = None
         self.fetch_result: list = []
+        self.fetchrow_result: dict | None = None
         self.last_fetch_query: str | None = None
         self.last_fetch_args: tuple = ()
 
@@ -42,6 +43,11 @@ class FakeConnection:
         self.last_fetch_query = query
         self.last_fetch_args = args
         return self.fetch_result
+
+    async def fetchrow(self, query: str, *args) -> dict | None:
+        self.last_fetch_query = query
+        self.last_fetch_args = args
+        return self.fetchrow_result
 
 
 class FakeAcquireContext:
@@ -428,3 +434,40 @@ async def test_fetch_all_returns_empty_when_not_connected():
     result = await pg.fetch_all("SELECT * FROM t")
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_one()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_one_returns_row(connected_pg: PostgresPool, fake_pool: FakePool):
+    """fetch_one()이 conn.fetchrow()의 결과를 그대로 반환한다."""
+    fake_pool._conn.fetchrow_result = {"id": 1, "name": "test"}
+
+    result = await connected_pg.fetch_one("SELECT * FROM t WHERE id = $1", 1)
+
+    assert result == {"id": 1, "name": "test"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_one_passes_query_and_args(connected_pg: PostgresPool, fake_pool: FakePool):
+    """fetch_one()이 쿼리와 바인딩 파라미터를 conn.fetchrow()에 그대로 전달한다."""
+    await connected_pg.fetch_one("SELECT * FROM t WHERE id = $1", 99)
+
+    assert fake_pool._conn.last_fetch_query == "SELECT * FROM t WHERE id = $1"
+    assert fake_pool._conn.last_fetch_args == (99,)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_one_returns_none_when_not_connected():
+    """연결되지 않은 상태에서 fetch_one()은 None을 반환한다."""
+    pg = PostgresPool(BASE_CONFIG)
+
+    result = await pg.fetch_one("SELECT * FROM t WHERE id = $1", 1)
+
+    assert result is None
