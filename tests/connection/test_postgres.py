@@ -30,10 +30,18 @@ class FakeTransaction:
 class FakeConnection:
     def __init__(self) -> None:
         self.last_tx: FakeTransaction | None = None
+        self.fetch_result: list = []
+        self.last_fetch_query: str | None = None
+        self.last_fetch_args: tuple = ()
 
     def transaction(self) -> FakeTransaction:
         self.last_tx = FakeTransaction()
         return self.last_tx
+
+    async def fetch(self, query: str, *args) -> list:
+        self.last_fetch_query = query
+        self.last_fetch_args = args
+        return self.fetch_result
 
 
 class FakeAcquireContext:
@@ -383,3 +391,40 @@ async def test_transaction_rolls_back_on_exception(connected_pg: PostgresPool, f
 
     assert fake_pool._conn.last_tx.rolled_back is True
     assert fake_pool._conn.last_tx.committed is False
+
+
+# ---------------------------------------------------------------------------
+# fetch_all()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_all_returns_rows(connected_pg: PostgresPool, fake_pool: FakePool):
+    """fetch_all()이 conn.fetch()의 결과를 그대로 반환한다."""
+    fake_pool._conn.fetch_result = [{"id": 1}, {"id": 2}]
+
+    result = await connected_pg.fetch_all("SELECT * FROM t")
+
+    assert result == [{"id": 1}, {"id": 2}]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_all_passes_query_and_args(connected_pg: PostgresPool, fake_pool: FakePool):
+    """fetch_all()이 쿼리와 바인딩 파라미터를 conn.fetch()에 그대로 전달한다."""
+    await connected_pg.fetch_all("SELECT * FROM t WHERE id = $1", 42)
+
+    assert fake_pool._conn.last_fetch_query == "SELECT * FROM t WHERE id = $1"
+    assert fake_pool._conn.last_fetch_args == (42,)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_all_returns_empty_when_not_connected():
+    """연결되지 않은 상태에서 fetch_all()은 빈 리스트를 반환한다."""
+    pg = PostgresPool(BASE_CONFIG)
+
+    result = await pg.fetch_all("SELECT * FROM t")
+
+    assert result == []
