@@ -1,0 +1,272 @@
+"""PostgresPool 테스트 — Fake DB + Faker 연결 설정값."""
+
+import pytest
+import pytest_asyncio
+from faker import Faker
+
+from src.connection import PostgresPool
+
+# ---------------------------------------------------------------------------
+# Fake DB (asyncpg Pool / Connection / Transaction 인터페이스 모사)
+# ---------------------------------------------------------------------------
+
+
+class FakePool:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+BASE_CONFIG: dict = {
+    "pool_min": 2,
+    "pool_max": 5,
+    "max_queries": 1000,
+    "connection_lifetime": 60,
+    "command_timeout": 10,
+}
+
+
+@pytest.fixture(scope="module")
+def fkr() -> Faker:
+    """모듈 내 공유 Faker 인스턴스."""
+    return Faker()
+
+
+@pytest.fixture
+def db_creds(fkr: Faker) -> dict:
+    """테스트마다 임의의 DB 연결 정보를 생성합니다.
+
+    패스워드에 URL 특수문자(:, @, /)가 포함되지 않도록 alphanumeric만 사용합니다.
+    """
+    return {
+        "host": fkr.ipv4(),
+        "port": fkr.random_int(min=1024, max=65535),
+        "user": fkr.user_name(),
+        "password": fkr.lexify("??????????", letters="abcdefghijklmnopqrstuvwxyz0123456789"),
+        "database": fkr.slug(),
+    }
+
+
+@pytest.fixture
+def db_url(db_creds: dict) -> str:
+    """db_creds로부터 DATABASE_URL 문자열을 생성합니다."""
+    c = db_creds
+    return f"postgresql://{c['user']}:{c['password']}@{c['host']}:{c['port']}/{c['database']}"
+
+
+@pytest.fixture
+def fake_pool() -> FakePool:
+    return FakePool()
+
+
+@pytest_asyncio.fixture
+async def connected_pg(fake_pool: FakePool, db_url: str, monkeypatch: pytest.MonkeyPatch) -> PostgresPool:
+    """FakePool이 주입된 연결 완료 상태의 PostgresPool."""
+
+    async def _fake_create_pool(**kwargs):
+        fake_pool.kwargs = kwargs
+        return fake_pool
+
+    monkeypatch.setattr("asyncpg.create_pool", _fake_create_pool)
+
+    pg = PostgresPool({**BASE_CONFIG, "database_url": db_url})
+    await pg.connect()
+    return pg
+
+
+# ---------------------------------------------------------------------------
+# __init__
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_init_default_state():
+    """생성 직후 pool은 None이고 is_connected는 False다."""
+    pg = PostgresPool(BASE_CONFIG)
+
+    assert pg.pool is None
+    assert pg.is_connected is False
+    assert pg.config is BASE_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# connect() — database_url
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_sets_connected_state(connected_pg: PostgresPool, fake_pool: FakePool):
+    """connect() 후 is_connected가 True이고 pool이 설정된다."""
+    assert connected_pg.is_connected is True
+    assert connected_pg.pool is fake_pool
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_parses_url_correctly(connected_pg: PostgresPool, fake_pool: FakePool, db_creds: dict):
+    """Faker로 생성한 URL이 올바르게 파싱돼 create_pool에 전달된다."""
+    assert fake_pool.kwargs["host"] == db_creds["host"]
+    assert fake_pool.kwargs["port"] == db_creds["port"]
+    assert fake_pool.kwargs["user"] == db_creds["user"]
+    assert fake_pool.kwargs["password"] == db_creds["password"]
+    assert fake_pool.kwargs["database"] == db_creds["database"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_passes_pool_config(connected_pg: PostgresPool, fake_pool: FakePool):
+    """pool 설정 값이 create_pool에 올바르게 전달된다."""
+    assert fake_pool.kwargs["min_size"] == BASE_CONFIG["pool_min"]
+    assert fake_pool.kwargs["max_size"] == BASE_CONFIG["pool_max"]
+    assert fake_pool.kwargs["max_queries"] == BASE_CONFIG["max_queries"]
+    assert fake_pool.kwargs["max_inactive_connection_lifetime"] == BASE_CONFIG["connection_lifetime"]
+    assert fake_pool.kwargs["command_timeout"] == BASE_CONFIG["command_timeout"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_uses_default_pool_config(db_url: str, monkeypatch: pytest.MonkeyPatch):
+    """pool 설정 키가 없으면 기본값이 create_pool에 전달된다."""
+    captured: dict = {}
+
+    async def _fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return FakePool()
+
+    monkeypatch.setattr("asyncpg.create_pool", _fake_create_pool)
+
+    pg = PostgresPool({"database_url": db_url})
+    await pg.connect()
+
+    assert captured["min_size"] == 10
+    assert captured["max_size"] == 20
+    assert captured["max_queries"] == 50000
+    assert captured["max_inactive_connection_lifetime"] == 300
+    assert captured["command_timeout"] == 60
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_with_env_var_url(db_url: str, db_creds: dict, monkeypatch: pytest.MonkeyPatch):
+    """DATABASE_URL 환경 변수로 연결하면 URL이 올바르게 파싱된다."""
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    captured: dict = {}
+
+    async def _fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return FakePool()
+
+    monkeypatch.setattr("asyncpg.create_pool", _fake_create_pool)
+
+    pg = PostgresPool(BASE_CONFIG)
+    await pg.connect()
+
+    assert pg.is_connected is True
+    assert captured["host"] == db_creds["host"]
+    assert captured["port"] == db_creds["port"]
+    assert captured["user"] == db_creds["user"]
+    assert captured["password"] == db_creds["password"]
+    assert captured["database"] == db_creds["database"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_with_individual_params(db_creds: dict, monkeypatch: pytest.MonkeyPatch):
+    """개별 host/port/user/password/database 키로 연결한다."""
+    captured: dict = {}
+
+    async def _fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return FakePool()
+
+    monkeypatch.setattr("asyncpg.create_pool", _fake_create_pool)
+
+    config = {**BASE_CONFIG, **db_creds}
+    pg = PostgresPool(config)
+    await pg.connect()
+
+    assert pg.is_connected is True
+    assert captured["host"] == db_creds["host"]
+    assert captured["port"] == db_creds["port"]
+    assert captured["user"] == db_creds["user"]
+    assert captured["password"] == db_creds["password"]
+    assert captured["database"] == db_creds["database"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_with_individual_env_vars(db_creds: dict, monkeypatch: pytest.MonkeyPatch):
+    """DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME 환경 변수로 연결한다."""
+    monkeypatch.setenv("DB_HOST", db_creds["host"])
+    monkeypatch.setenv("DB_PORT", str(db_creds["port"]))
+    monkeypatch.setenv("DB_USER", db_creds["user"])
+    monkeypatch.setenv("DB_PASSWORD", db_creds["password"])
+    monkeypatch.setenv("DB_NAME", db_creds["database"])
+    captured: dict = {}
+
+    async def _fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return FakePool()
+
+    monkeypatch.setattr("asyncpg.create_pool", _fake_create_pool)
+
+    pg = PostgresPool(BASE_CONFIG)
+    await pg.connect()
+
+    assert pg.is_connected is True
+    assert captured["host"] == db_creds["host"]
+    assert captured["port"] == db_creds["port"]
+    assert captured["user"] == db_creds["user"]
+    assert captured["password"] == db_creds["password"]
+    assert captured["database"] == db_creds["database"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connect_failure_keeps_disconnected(db_url: str, monkeypatch: pytest.MonkeyPatch):
+    """연결 실패 시 예외가 전파되고 is_connected는 False를 유지한다."""
+
+    async def _failing_create_pool(**_):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("asyncpg.create_pool", _failing_create_pool)
+
+    pg = PostgresPool({**BASE_CONFIG, "database_url": db_url})
+
+    with pytest.raises(OSError, match="connection refused"):
+        await pg.connect()
+
+    assert pg.is_connected is False
+    assert pg.pool is None
+
+
+# ---------------------------------------------------------------------------
+# disconnect()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_disconnect_closes_pool(connected_pg: PostgresPool, fake_pool: FakePool):
+    """disconnect() 호출 시 pool이 닫히고 is_connected가 False가 된다."""
+    await connected_pg.disconnect()
+
+    assert fake_pool.closed is True
+    assert connected_pg.pool is None
+    assert connected_pg.is_connected is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_disconnect_without_connect_is_safe():
+    """connect() 없이 disconnect()를 호출해도 예외가 발생하지 않는다."""
+    pg = PostgresPool(BASE_CONFIG)
+    await pg.disconnect()

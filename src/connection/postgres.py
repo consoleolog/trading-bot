@@ -1,0 +1,86 @@
+import os
+import urllib.parse
+
+import asyncpg
+import structlog
+from asyncpg.pool import Pool
+
+logger = structlog.get_logger(__name__)
+
+
+class PostgresPool:
+    """asyncpg 기반 PostgreSQL 커넥션 풀 관리 클래스."""
+
+    def __init__(self, config: dict) -> None:
+        """설정 딕셔너리로 초기화합니다.
+
+        Args:
+            config: 연결 및 풀 설정 딕셔너리. 지원하는 키:
+
+                - ``database_url`` -전체 연결 URL
+                  (``postgresql://user:pass@host:port/dbname``).
+                - ``host``, ``port``, ``user``, ``password``, ``database`` -
+                  ``database_url`` 이 없을 때 사용하는 개별 연결 파라미터.
+                - ``pool_min`` (int, 기본값 10) -최소 풀 크기.
+                - ``pool_max`` (int, 기본값 20) -최대 풀 크기.
+                - ``max_queries`` (int, 기본값 50000) -커넥션당 최대 쿼리 수
+                  (초과 시 커넥션 재생성).
+                - ``connection_lifetime`` (int, 기본값 300) -유휴 커넥션
+                  유지 시간(초).
+                - ``command_timeout`` (int, 기본값 60) -기본 명령 타임아웃(초).
+        """
+        self.config = config
+        self.pool: Pool | None = None
+        self.is_connected: bool = False
+
+    async def connect(self) -> None:
+        """커넥션 풀을 생성하고 데이터베이스에 연결."""
+        try:
+            database_url: str | None = self.config.get("database_url") or os.getenv("DATABASE_URL")
+
+            pool_kwargs = {
+                "min_size": self.config.get("pool_min", 10),
+                "max_size": self.config.get("pool_max", 20),
+                "max_queries": self.config.get("max_queries", 50000),
+                "max_inactive_connection_lifetime": self.config.get("connection_lifetime", 300),
+                "command_timeout": self.config.get("command_timeout", 60),
+            }
+
+            if database_url:
+                parsed = urllib.parse.urlparse(database_url)
+                logger.info(
+                    "🔌 데이터베이스 연결 중", host=parsed.hostname, port=parsed.port, database=parsed.path.lstrip("/")
+                )
+                self.pool = await asyncpg.create_pool(
+                    host=parsed.hostname,
+                    port=parsed.port,
+                    user=parsed.username,
+                    password=parsed.password,
+                    database=parsed.path.lstrip("/"),
+                    **pool_kwargs,
+                )
+            else:
+                host: str | None = self.config.get("host") or os.getenv("DB_HOST")
+                port: int = self.config.get("port") or int(os.getenv("DB_PORT", 5432))
+                user: str | None = self.config.get("user") or os.getenv("DB_USER")
+                password: str | None = self.config.get("password") or os.getenv("DB_PASSWORD")
+                database: str | None = self.config.get("database") or os.getenv("DB_NAME")
+
+                logger.info("🔌 데이터베이스 연결 중", host=host, port=port)
+                self.pool = await asyncpg.create_pool(
+                    host=host, port=port, user=user, password=password, database=database, **pool_kwargs
+                )
+
+            self.is_connected = True
+            logger.info("✅ PostgreSQL 데이터베이스 연결 성공")
+        except Exception as error:
+            logger.exception("❌ 데이터베이스 연결 실패", error=str(error))
+            raise
+
+    async def disconnect(self) -> None:
+        """풀 내 모든 커넥션을 닫고 연결 상태를 해제."""
+        if self.pool:
+            await self.pool.close()
+            self.pool = None
+            self.is_connected = False
+            logger.info("🔒 데이터베이스 연결 해제")
