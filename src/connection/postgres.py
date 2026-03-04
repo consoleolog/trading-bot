@@ -99,3 +99,15 @@ class PostgresPool:
         """
         async with self.pool.acquire() as conn:
             yield conn
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[asyncpg.Connection, None]:
+        """커넥션을 획득하고 데이터베이스 트랜잭션을 시작합니다.
+
+        ``async with`` 블록이 정상 종료되면 커밋, 예외 발생 시 자동 롤백합니다.
+
+        Yields:
+            asyncpg.Connection: 트랜잭션이 열려 있는 활성 데이터베이스 커넥션.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            yield conn

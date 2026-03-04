@@ -11,8 +11,29 @@ from src.connection import PostgresPool
 # ---------------------------------------------------------------------------
 
 
+class FakeTransaction:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    async def __aenter__(self) -> "FakeTransaction":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if exc_type is None:
+            self.committed = True
+        else:
+            self.rolled_back = True
+        return False
+
+
 class FakeConnection:
-    pass
+    def __init__(self) -> None:
+        self.last_tx: FakeTransaction | None = None
+
+    def transaction(self) -> FakeTransaction:
+        self.last_tx = FakeTransaction()
+        return self.last_tx
 
 
 class FakeAcquireContext:
@@ -326,3 +347,39 @@ async def test_acquire_releases_connection_on_exception(connected_pg: PostgresPo
             raise RuntimeError("query error")
 
     assert fake_pool._acquire_ctx.released is True
+
+
+# ---------------------------------------------------------------------------
+# transaction()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transaction_yields_connection(connected_pg: PostgresPool, fake_pool: FakePool):
+    """transaction()이 FakeConnection을 컨텍스트 변수로 전달한다."""
+    async with connected_pg.transaction() as conn:
+        assert conn is fake_pool._conn
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transaction_commits_on_success(connected_pg: PostgresPool, fake_pool: FakePool):
+    """블록이 정상 종료되면 트랜잭션이 커밋된다."""
+    async with connected_pg.transaction():
+        pass
+
+    assert fake_pool._conn.last_tx.committed is True
+    assert fake_pool._conn.last_tx.rolled_back is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transaction_rolls_back_on_exception(connected_pg: PostgresPool, fake_pool: FakePool):
+    """블록에서 예외가 발생하면 트랜잭션이 롤백되고 예외가 전파된다."""
+    with pytest.raises(ValueError, match="tx error"):
+        async with connected_pg.transaction():
+            raise ValueError("tx error")
+
+    assert fake_pool._conn.last_tx.rolled_back is True
+    assert fake_pool._conn.last_tx.committed is False
