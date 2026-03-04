@@ -129,3 +129,21 @@ class PostgresPool:
 
         async with self.pool.acquire() as conn:
             return await conn.fetch(query, *args)
+
+    async def fetch_one(self, query: str, *args) -> asyncpg.Record | None:
+        """쿼리를 실행하고 첫 번째 결과 행 하나를 반환합니다.
+
+        풀이 연결되지 않은 경우 None을 반환합니다.
+
+        Args:
+            query: 실행할 SQL 쿼리 문자열.
+            *args: 쿼리 바인딩 파라미터.
+
+        Returns:
+            asyncpg.Record | None: 첫 번째 결과 행. 결과가 없거나 연결되지 않은 경우 None.
+        """
+        if not self.pool or not self.is_connected:
+            return None
+
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
