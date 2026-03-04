@@ -11,10 +11,32 @@ from src.connection import PostgresPool
 # ---------------------------------------------------------------------------
 
 
+class FakeConnection:
+    pass
+
+
+class FakeAcquireContext:
+    def __init__(self, conn: FakeConnection) -> None:
+        self._conn = conn
+        self.released = False
+
+    async def __aenter__(self) -> FakeConnection:
+        return self._conn
+
+    async def __aexit__(self, *_) -> None:
+        self.released = True
+
+
 class FakePool:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.closed = False
+        self._conn = FakeConnection()
+        self._acquire_ctx: FakeAcquireContext | None = None
+
+    def acquire(self) -> FakeAcquireContext:
+        self._acquire_ctx = FakeAcquireContext(self._conn)
+        return self._acquire_ctx
 
     async def close(self) -> None:
         self.closed = True
@@ -270,3 +292,37 @@ async def test_disconnect_without_connect_is_safe():
     """connect() 없이 disconnect()를 호출해도 예외가 발생하지 않는다."""
     pg = PostgresPool(BASE_CONFIG)
     await pg.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# acquire()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acquire_yields_connection(connected_pg: PostgresPool, fake_pool: FakePool):
+    """acquire()가 FakeConnection을 컨텍스트 변수로 전달한다."""
+    async with connected_pg.acquire() as conn:
+        assert conn is fake_pool._conn
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acquire_releases_connection_on_exit(connected_pg: PostgresPool, fake_pool: FakePool):
+    """블록 정상 종료 시 커넥션이 풀에 반환된다."""
+    async with connected_pg.acquire():
+        pass
+
+    assert fake_pool._acquire_ctx.released is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_acquire_releases_connection_on_exception(connected_pg: PostgresPool, fake_pool: FakePool):
+    """블록에서 예외가 발생해도 커넥션이 반환되고 예외가 전파된다."""
+    with pytest.raises(RuntimeError, match="query error"):
+        async with connected_pg.acquire():
+            raise RuntimeError("query error")
+
+    assert fake_pool._acquire_ctx.released is True
