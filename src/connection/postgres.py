@@ -147,3 +147,22 @@ class PostgresPool:
 
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(query, *args)
+
+    async def execute(self, query: str, *args) -> str | None:
+        """INSERT, UPDATE, DELETE 등 쿼리를 실행합니다.
+
+        풀이 연결되지 않은 경우 None을 반환합니다.
+
+        Args:
+            query: 실행할 SQL 쿼리 문자열.
+            *args: 쿼리 바인딩 파라미터.
+
+        Returns:
+            str | None: 명령 상태 문자열 (예: ``INSERT 0 1``, ``UPDATE 3``).
+                연결되지 않은 경우 None.
+        """
+        if not self.pool or not self.is_connected:
+            return None
+
+        async with self.pool.acquire() as conn:
+            return await conn.execute(query, *args)

@@ -32,8 +32,11 @@ class FakeConnection:
         self.last_tx: FakeTransaction | None = None
         self.fetch_result: list = []
         self.fetchrow_result: dict | None = None
+        self.execute_result: str = "OK"
         self.last_fetch_query: str | None = None
         self.last_fetch_args: tuple = ()
+        self.last_execute_query: str | None = None
+        self.last_execute_args: tuple = ()
 
     def transaction(self) -> FakeTransaction:
         self.last_tx = FakeTransaction()
@@ -48,6 +51,11 @@ class FakeConnection:
         self.last_fetch_query = query
         self.last_fetch_args = args
         return self.fetchrow_result
+
+    async def execute(self, query: str, *args) -> str:
+        self.last_execute_query = query
+        self.last_execute_args = args
+        return self.execute_result
 
 
 class FakeAcquireContext:
@@ -469,5 +477,42 @@ async def test_fetch_one_returns_none_when_not_connected():
     pg = PostgresPool(BASE_CONFIG)
 
     result = await pg.fetch_one("SELECT * FROM t WHERE id = $1", 1)
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# execute()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_execute_returns_status(connected_pg: PostgresPool, fake_pool: FakePool):
+    """execute()가 conn.execute()의 명령 상태 문자열을 그대로 반환한다."""
+    fake_pool._conn.execute_result = "INSERT 0 1"
+
+    result = await connected_pg.execute("INSERT INTO t (v) VALUES ($1)", 1)
+
+    assert result == "INSERT 0 1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_execute_passes_query_and_args(connected_pg: PostgresPool, fake_pool: FakePool):
+    """execute()가 쿼리와 바인딩 파라미터를 conn.execute()에 그대로 전달한다."""
+    await connected_pg.execute("DELETE FROM t WHERE id = $1", 7)
+
+    assert fake_pool._conn.last_execute_query == "DELETE FROM t WHERE id = $1"
+    assert fake_pool._conn.last_execute_args == (7,)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_execute_returns_none_when_not_connected():
+    """연결되지 않은 상태에서 execute()는 None을 반환한다."""
+    pg = PostgresPool(BASE_CONFIG)
+
+    result = await pg.execute("DELETE FROM t WHERE id = $1", 1)
 
     assert result is None
